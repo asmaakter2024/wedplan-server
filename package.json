@@ -4,7 +4,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "seed": "node scripts/seed-services.js",
+    "test": "node scripts/test-api.js && node scripts/test-flows.js"
   },
   "keywords": [],
   "author": "",
