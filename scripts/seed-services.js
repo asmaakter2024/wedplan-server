@@ -2,16 +2,20 @@
  * Seeds demo services into MongoDB so the Browse page, the vendor
  * dashboard and the admin review screen have real data to show.
  *
- *   node scripts/seed-services.js [vendorEmail]
+ *   node scripts/seed-services.js vendor1@example.com,vendor2@example.com
  *
- * - Inserts the 8 demo services as "approved" + active
- * - Inserts 1 extra service as "pending" so an admin can approve/reject
+ * - Inserts demo services across the supplied vendor accounts
+ * - Respects the free-plan limit of 3 approved, active services per vendor
+ * - Leaves excess listings pending for an admin to review
  * - Safe to run twice: it only inserts services that do not exist yet
  */
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
 
-const vendorEmail = (process.argv[2] || "monni@gmail.com").toLowerCase();
+const vendorEmails = (process.argv[2] || "")
+  .split(",")
+  .map((email) => email.trim().toLowerCase())
+  .filter(Boolean);
 
 /** The same showcase data the client uses as an offline fallback. */
 const DEMO_SERVICES = [
@@ -115,42 +119,83 @@ try {
   const users = db.collection("user");
   const services = db.collection("services");
 
-  const vendor = await users.findOne({ email: vendorEmail });
-  if (!vendor) {
-    console.log(`No user found with email "${vendorEmail}".`);
-    console.log("Create the account first, or pass another email:");
-    console.log("  node scripts/seed-services.js someone@example.com");
+  if (vendorEmails.length === 0) {
+    console.log("Pass one or more existing vendor email addresses separated by commas.");
+    console.log("Example: node scripts/seed-services.js vendor1@example.com,vendor2@example.com");
     process.exit(1);
   }
 
+  const vendors = await Promise.all(vendorEmails.map((email) => users.findOne({ email, role: "vendor" })));
+  const missing = vendorEmails.filter((email, index) => !vendors[index]);
+  if (missing.length) {
+    console.log(`No vendor account found for: ${missing.join(", ")}`);
+    console.log("Create those vendor accounts first, then run the seed command again.");
+    process.exit(1);
+  }
+
+  const vendorState = await Promise.all(vendors.map(async (vendor) => {
+    const rawExpiry = vendor.subscriptionExpiresAt || "";
+    const plan = vendor.subscriptionPlan === "premium"
+      ? "premium"
+      : vendor.subscriptionPlan === "free"
+        ? "free"
+        : vendor.subscription;
+    const premium = plan === "premium" &&
+      (!rawExpiry || new Date(rawExpiry).getTime() > Date.now());
+    const activeCount = await services.countDocuments({
+      vendorId: vendor._id,
+      status: "approved",
+      isActive: { $ne: false },
+    });
+    return { vendor, premium, activeCount };
+  }));
+
   let inserted = 0;
+  let cursor = 0;
 
   for (const service of DEMO_SERVICES) {
+    let selected = null;
+    for (let attempt = 0; attempt < vendorState.length; attempt += 1) {
+      const index = (cursor + attempt) % vendorState.length;
+      const candidate = vendorState[index];
+      if (candidate.premium || candidate.activeCount < 3) {
+        selected = candidate;
+        cursor = (index + 1) % vendorState.length;
+        break;
+      }
+    }
+    selected ||= vendorState[0];
+
     const exists = await services.findOne({
-      vendorId: vendor._id,
+      vendorId: { $in: vendors.map((vendor) => vendor._id) },
       serviceName: service.serviceName,
     });
     if (exists) continue;
 
+    const approved = selected.premium || selected.activeCount < 3;
+    const now = new Date();
+
     await services.insertOne({
       ...service,
-      vendorId: vendor._id,
-      status: "approved",
+      vendorId: selected.vendor._id,
+      status: approved ? "approved" : "pending",
       isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
     });
+    if (approved && !selected.premium) selected.activeCount += 1;
     inserted += 1;
   }
 
+  const pendingVendor = vendorState[0].vendor;
   const pendingExists = await services.findOne({
-    vendorId: vendor._id,
+    vendorId: pendingVendor._id,
     serviceName: PENDING_SERVICE.serviceName,
   });
   if (!pendingExists) {
     await services.insertOne({
       ...PENDING_SERVICE,
-      vendorId: new ObjectId(vendor._id),
+      vendorId: new ObjectId(pendingVendor._id),
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -158,7 +203,7 @@ try {
     inserted += 1;
   }
 
-  console.log(`Done — ${inserted} new service(s) inserted for ${vendorEmail}.`);
+  console.log(`Done — ${inserted} new service(s) inserted across ${vendorEmails.length} vendor account(s).`);
   console.log(`Total services now: ${await services.countDocuments({})}`);
 } finally {
   await client.close();

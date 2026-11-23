@@ -9,7 +9,7 @@ import {
   bookingsCollection,
   transactionsCollection,
 } from "../db.js";
-import { asyncHandler, ApiError, contains, toObjectId } from "../utils.js";
+import { asyncHandler, ApiError, contains, toObjectId, currentSubscriptionPlan } from "../utils.js";
 import { requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -41,7 +41,7 @@ router.get(
       usersCollection.countDocuments({ role: "customer" }),
       servicesCollection.countDocuments({}),
       servicesCollection.countDocuments({ status: "pending" }),
-      transactionsCollection.countDocuments({ status: "succeeded" }),
+      transactionsCollection.countDocuments({}),
       transactionsCollection
         .aggregate([
           { $match: { status: "succeeded" } },
@@ -93,6 +93,8 @@ router.get(
           image: 1,
           role: 1,
           subscription: 1,
+          subscriptionPlan: 1,
+          subscriptionExpiresAt: 1,
           isBlocked: 1,
           createdAt: 1,
           businessName: 1,
@@ -102,7 +104,12 @@ router.get(
       .toArray();
 
     res.json({
-      users: users.map((user) => ({ ...user, _id: user._id.toString() })),
+      users: users.map((user) => ({
+        ...user,
+        subscription: currentSubscriptionPlan(user),
+        subscriptionPlan: currentSubscriptionPlan(user),
+        _id: user._id.toString(),
+      })),
     });
   }),
 );
@@ -214,6 +221,23 @@ router.patch(
       throw new ApiError(400, "Status must be pending, approved or rejected.");
     }
 
+    if (status === "approved") {
+      const service = await servicesCollection.findOne({ _id });
+      if (!service) throw new ApiError(404, "Service not found.");
+      const vendor = await usersCollection.findOne({ _id: service.vendorId });
+      if (vendor && currentSubscriptionPlan(vendor) === "free" && service.isActive !== false) {
+        const activeCount = await servicesCollection.countDocuments({
+          vendorId: service.vendorId,
+          status: "approved",
+          isActive: { $ne: false },
+          _id: { $ne: _id },
+        });
+        if (activeCount >= 3) {
+          throw new ApiError(403, "This vendor has reached the free-plan limit of 3 active services. They must upgrade to Premium before another service can be published.");
+        }
+      }
+    }
+
     const result = await servicesCollection.updateOne(
       { _id },
       { $set: { status, updatedAt: new Date() } },
@@ -243,6 +267,25 @@ router.patch(
 
     if (typeof isActive !== "boolean") {
       throw new ApiError(400, '"isActive" must be true or false.');
+    }
+
+    if (isActive) {
+      const service = await servicesCollection.findOne({ _id });
+      if (!service) throw new ApiError(404, "Service not found.");
+      if (service.status === "approved") {
+        const vendor = await usersCollection.findOne({ _id: service.vendorId });
+        if (vendor && currentSubscriptionPlan(vendor) === "free") {
+          const activeCount = await servicesCollection.countDocuments({
+            vendorId: service.vendorId,
+            status: "approved",
+            isActive: { $ne: false },
+            _id: { $ne: _id },
+          });
+          if (activeCount >= 3) {
+            throw new ApiError(403, "The vendor must upgrade to Premium before activating more than 3 services.");
+          }
+        }
+      }
     }
 
     const result = await servicesCollection.updateOne(

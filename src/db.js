@@ -6,7 +6,6 @@
  *   - "services", "bookings", "transactions"        -> created by this API
  */
 import { MongoClient, ObjectId } from "mongodb";
-import "dotenv/config";
 
 const DB_URI = process.env.DB_URI;
 
@@ -33,6 +32,10 @@ export const transactionsCollection = db.collection("transactions");
 /** Opens the connection once, when the server starts. */
 export async function connectToDatabase() {
   await client.connect();
+  await transactionsCollection.createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
+  await transactionsCollection.createIndex({ stripeInvoiceId: 1 }, { unique: true, sparse: true });
+  await transactionsCollection.createIndex({ vendorId: 1, createdAt: -1 });
+  await bookingsCollection.createIndex({ activeBookingKey: 1 }, { unique: true, sparse: true });
   console.log("MongoDB connected.");
 }
 

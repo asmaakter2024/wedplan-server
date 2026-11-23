@@ -6,7 +6,7 @@
  */
 import { Router } from "express";
 import { usersCollection } from "../db.js";
-import { asyncHandler, ApiError, toObjectId } from "../utils.js";
+import { asyncHandler, ApiError, toObjectId, currentSubscriptionPlan } from "../utils.js";
 import { requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -34,6 +34,9 @@ router.get(
           address: 1,
           bio: 1,
           subscription: 1,
+          subscriptionPlan: 1,
+          subscriptionExpiresAt: 1,
+          subscriptionCancelAtPeriodEnd: 1,
           isBlocked: 1,
           createdAt: 1,
         },
@@ -42,7 +45,14 @@ router.get(
 
     if (!user) throw new ApiError(404, "Account not found.");
 
-    res.json({ user: { ...user, _id: user._id.toString() } });
+    res.json({
+      user: {
+        ...user,
+        subscription: currentSubscriptionPlan(user),
+        subscriptionPlan: currentSubscriptionPlan(user),
+        _id: user._id.toString(),
+      },
+    });
   }),
 );
 
@@ -68,6 +78,17 @@ router.put(
       }
       if (field === "image" && value && !value.startsWith("http")) {
         throw new ApiError(400, "Profile image must be a valid URL.");
+      }
+      if (field === "image" && value) {
+        let imageUrl;
+        try {
+          imageUrl = new URL(value);
+        } catch {
+          throw new ApiError(400, "Profile image must be a valid URL.");
+        }
+        if (imageUrl.protocol !== "https:" || !["i.ibb.co", "images.unsplash.com"].includes(imageUrl.hostname)) {
+          throw new ApiError(400, "Profile images must be secure ImgBB or Unsplash URLs.");
+        }
       }
       if (value.length > 500) {
         throw new ApiError(400, `"${field}" is too long.`);

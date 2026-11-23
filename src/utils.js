@@ -70,6 +70,25 @@ export function readNumber(body, field, { required = true, min = 0, max = 100000
   return value;
 }
 
+/** Resolve current and legacy plan fields, enforcing a stored expiry. */
+export function currentSubscriptionPlan(user) {
+  const plan = user?.subscriptionPlan === "premium"
+    ? "premium"
+    : user?.subscriptionPlan === "free"
+      ? "free"
+      : user?.subscription === "premium"
+        ? "premium"
+        : "free";
+  if (plan !== "premium") return "free";
+
+  const rawExpiry = user.subscriptionExpiresAt || user.premiumExpiresAt;
+  if (rawExpiry) {
+    const expiresAt = new Date(rawExpiry).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return "free";
+  }
+  return "premium";
+}
+
 /** Public fields we return for a user (never leaks internal data). */
 export const USER_PUBLIC_FIELDS = {
   name: 1,
@@ -81,6 +100,8 @@ export const USER_PUBLIC_FIELDS = {
   address: 1,
   bio: 1,
   subscription: 1,
+  subscriptionPlan: 1,
+  subscriptionExpiresAt: 1,
   isBlocked: 1,
   createdAt: 1,
 };

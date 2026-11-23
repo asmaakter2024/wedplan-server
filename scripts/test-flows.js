@@ -67,7 +67,9 @@ const adminToken = token(admin);
 const vendorToken = token(vendor);
 const customerToken = token(customer);
 
-const originalPlan = vendor.subscription || "free";
+const originalSubscriptionPlan = vendor.subscriptionPlan;
+const originalSubscription = vendor.subscription;
+const originalSubscriptionExpiresAt = vendor.subscriptionExpiresAt;
 const createdServiceIds = [];
 
 /** Removes everything this test created. */
@@ -77,9 +79,19 @@ async function cleanup() {
     await bookings.deleteMany({ serviceId: { $in: ids } });
     await services.deleteMany({ _id: { $in: ids } });
   }
+  const vendorRestore = { isBlocked: false };
+  const vendorUnset = {};
+  for (const [field, value] of Object.entries({
+    subscriptionPlan: originalSubscriptionPlan,
+    subscription: originalSubscription,
+    subscriptionExpiresAt: originalSubscriptionExpiresAt,
+  })) {
+    if (value === undefined) vendorUnset[field] = "";
+    else vendorRestore[field] = value;
+  }
   await users.updateOne(
     { _id: vendor._id },
-    { $set: { subscription: originalPlan, isBlocked: false } },
+    { $set: vendorRestore, ...(Object.keys(vendorUnset).length ? { $unset: vendorUnset } : {}) },
   );
   await users.updateOne({ _id: customer._id }, { $set: { isBlocked: false } });
 }
@@ -87,7 +99,11 @@ async function cleanup() {
 try {
   /* ---------------- free plan limit ---------------- */
   console.log("\nFree plan limits");
-  await users.updateOne({ _id: vendor._id }, { $set: { subscription: "free" } });
+  await users.updateOne({
+    _id: vendor._id,
+  }, {
+    $set: { subscriptionPlan: "free", subscription: "free", subscriptionExpiresAt: "" },
+  });
 
   const newService = {
     serviceName: "TEST — Candlelit Rooftop Ceremony",
@@ -95,30 +111,56 @@ try {
     description: "Automated test service. Safe to delete.",
     price: 1200,
     location: "Test City",
-    images: [],
+    images: ["https://images.unsplash.com/photo-1519167758481-83f550bb49b3?w=900&q=80"],
   };
 
-  const createFree = await call("/api/vendor/services", {
+  let activeCount = await services.countDocuments({
+    vendorId: vendor._id,
+    status: "approved",
+    isActive: { $ne: false },
+  });
+
+  while (activeCount < 3) {
+    const freeService = await call("/api/vendor/services", {
+      method: "POST",
+      token: vendorToken,
+      body: { ...newService, serviceName: `${newService.serviceName} ${activeCount + 1}` },
+    });
+    check("free vendor can submit a service for review (201)", freeService.status === 201);
+    const freeServiceId = freeService.data.service?._id;
+    if (!freeServiceId) break;
+    createdServiceIds.push(freeServiceId);
+    const freeApproval = await call(`/api/admin/services/${freeServiceId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { status: "approved" },
+    });
+    if (freeApproval.status !== 200) break;
+    activeCount += 1;
+  }
+
+  const overLimit = await call("/api/vendor/services", {
     method: "POST",
     token: vendorToken,
-    body: newService,
+    body: { ...newService, serviceName: `${newService.serviceName} over limit` },
   });
-  const vendorServiceCount = await services.countDocuments({
-    vendorId: vendor._id,
-    status: { $ne: "rejected" },
-  });
-  const freeLimitHit = vendorServiceCount >= 3;
-  check(
-    freeLimitHit
-      ? "free plan is blocked after 3 services (403)"
-      : "vendor on free plan can still add services (<3)",
-    freeLimitHit ? createFree.status === 403 : createFree.status === 201,
-    `-> ${createFree.status} ${createFree.data.message}`,
-  );
+  const overLimitId = overLimit.data.service?._id;
+  if (overLimitId) createdServiceIds.push(overLimitId);
+  const refusedApproval = overLimitId
+    ? await call(`/api/admin/services/${overLimitId}/status`, {
+        method: "PATCH",
+        token: adminToken,
+        body: { status: "approved" },
+      })
+    : { status: overLimit.status, data: overLimit.data };
+  check("a free vendor cannot publish a fourth active service (403)", refusedApproval.status === 403,
+    `-> ${refusedApproval.status} ${refusedApproval.data.message}`);
 
   /* ---------------- premium plan ---------------- */
   console.log("\nPremium plan");
-  await users.updateOne({ _id: vendor._id }, { $set: { subscription: "premium" } });
+  await users.updateOne({ _id: vendor._id }, {
+    $set: { subscriptionPlan: "premium", subscription: "premium", subscriptionExpiresAt: "" },
+  });
 
   const created = await call("/api/vendor/services", {
     method: "POST",

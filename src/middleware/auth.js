@@ -47,6 +47,9 @@ export function requireRole(...allowedRoles) {
       if (!user) {
         throw new ApiError(401, "Account not found. Please sign in again.");
       }
+      if (user.registrationRolePending === true) {
+        throw new ApiError(403, "Finish setting up your WedPlan account first.");
+      }
       if (user.isBlocked) {
         throw new ApiError(403, "This account has been blocked. Contact support.");
       }

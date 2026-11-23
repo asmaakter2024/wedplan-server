@@ -4,9 +4,11 @@
  * Start with:   npm run dev     (auto restart)
  *               npm start       (production)
  */
+// Load the server-local .env before modules read database or payment settings.
+import "./src/load-env.js";
+
 import express from "express";
 import cors from "cors";
-import "dotenv/config";
 
 import { connectToDatabase } from "./src/db.js";
 import { errorHandler, notFoundHandler } from "./src/middleware/error.js";
@@ -22,10 +24,23 @@ import paymentsRouter, { stripeWebhook } from "./src/routes/payments.js";
 
 const app = express();
 
+if (!process.env.JWT_SECRET) {
+  throw new Error("Missing JWT_SECRET. Set the same private secret on the Next.js app and API server.");
+}
+
+const allowedClientOrigins = new Set(
+  [process.env.CLIENT_URL || "http://localhost:3000", ...(process.env.CLIENT_ORIGINS || "").split(",")]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => new URL(value).origin),
+);
+
 // CORS — only the Next.js client may call this API
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin(origin, callback) {
+      callback(null, !origin || allowedClientOrigins.has(origin));
+    },
     credentials: true,
   }),
 );

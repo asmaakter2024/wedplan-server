@@ -65,10 +65,15 @@ router.post(
     const eventDate = readString(req.body, "eventDate", { maxLength: 20 });
     const eventLocation = readString(req.body, "eventLocation", { maxLength: 200 });
     const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+    if (message.length > 2000) throw new ApiError(400, "Message must be at most 2000 characters.");
 
     // The event date must be a real date (the form sends YYYY-MM-DD)
-    const dateObject = new Date(`${eventDate}T00:00:00`);
-    if (Number.isNaN(dateObject.getTime())) {
+    const dateObject = new Date(`${eventDate}T00:00:00.000Z`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) ||
+      Number.isNaN(dateObject.getTime()) ||
+      dateObject.toISOString().slice(0, 10) !== eventDate
+    ) {
       throw new ApiError(400, "Please provide a valid event date.");
     }
 
@@ -106,6 +111,7 @@ router.post(
       customerId,
       vendorId: service.vendorId,
       eventDate,
+      activeBookingKey: `${_id.toString()}:${eventDate}`,
       eventLocation,
       message,
       status: "pending",
@@ -187,10 +193,15 @@ async function updateRequestStatus(req, res, newStatus) {
     );
   }
 
-  await bookingsCollection.updateOne(
-    { _id: booking._id },
-    { $set: { status: newStatus, updatedAt: new Date() } },
+  const updated = await bookingsCollection.updateOne(
+    { _id: booking._id, vendorId: toObjectId(req.userId), status: "pending" },
+    newStatus === "rejected"
+      ? { $set: { status: newStatus, updatedAt: new Date() }, $unset: { activeBookingKey: "" } }
+      : { $set: { status: newStatus, updatedAt: new Date() } },
   );
+  if (updated.modifiedCount === 0) {
+    throw new ApiError(409, "This booking request has already been processed.");
+  }
 
   res.json({
     message:
@@ -236,10 +247,13 @@ router.patch(
       throw new ApiError(400, "Only pending requests can be cancelled.");
     }
 
-    await bookingsCollection.updateOne(
-      { _id: booking._id },
-      { $set: { status: "cancelled", updatedAt: new Date() } },
+    const updated = await bookingsCollection.updateOne(
+      { _id: booking._id, customerId: toObjectId(req.userId), status: "pending" },
+      { $set: { status: "cancelled", updatedAt: new Date() }, $unset: { activeBookingKey: "" } },
     );
+    if (updated.modifiedCount === 0) {
+      throw new ApiError(409, "This booking request has already been processed.");
+    }
 
     res.json({ message: "Booking request cancelled.", status: "cancelled" });
   }),

@@ -10,7 +10,7 @@ import {
   bookingsCollection,
   transactionsCollection,
 } from "../db.js";
-import { asyncHandler, toObjectId } from "../utils.js";
+import { asyncHandler, toObjectId, currentSubscriptionPlan } from "../utils.js";
 import { requireRole } from "../middleware/auth.js";
 
 const router = Router();
@@ -60,7 +60,7 @@ router.get(
         activeServices,
         pendingRequests,
         acceptedBookings,
-        plan: req.user.subscription === "premium" ? "premium" : "free",
+        plan: currentSubscriptionPlan(req.user),
       });
     }
 

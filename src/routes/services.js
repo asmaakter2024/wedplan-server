@@ -22,6 +22,9 @@ const VENDOR_LOOKUP = {
         name: 1,
         image: 1,
         businessName: 1,
+        subscription: 1,
+        subscriptionPlan: 1,
+        subscriptionExpiresAt: 1,
       },
     },
   ],
@@ -32,6 +35,58 @@ const PUBLIC_FILTER = {
   status: "approved",
   isActive: { $ne: false },
 };
+
+const PREMIUM_RANK = {
+  $cond: [
+    {
+      $and: [
+        {
+          $or: [
+            { $eq: ["$vendorId.subscriptionPlan", "premium"] },
+            {
+              $and: [
+                { $eq: [{ $ifNull: ["$vendorId.subscriptionPlan", null] }, null] },
+                { $eq: ["$vendorId.subscription", "premium"] },
+              ],
+            },
+          ],
+        },
+        {
+          $or: [
+            { $eq: [{ $ifNull: ["$vendorId.subscriptionExpiresAt", ""] }, ""] },
+            {
+              $gt: [
+                {
+                  $dateFromString: {
+                    dateString: "$vendorId.subscriptionExpiresAt",
+                    onError: new Date(0),
+                    onNull: new Date(0),
+                  },
+                },
+                "$$NOW",
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    1,
+    0,
+  ],
+};
+
+function toPublicVendor(vendor) {
+  if (!vendor) return null;
+  const legacyPremium = !vendor.subscriptionPlan && vendor.subscription === "premium";
+  const expiry = vendor.subscriptionExpiresAt ? new Date(vendor.subscriptionExpiresAt).getTime() : null;
+  const isPremium = (vendor.subscriptionPlan === "premium" || legacyPremium) &&
+    (expiry === null || (Number.isFinite(expiry) && expiry > Date.now()));
+  return {
+    ...vendor,
+    subscriptionPlan: isPremium ? "premium" : "free",
+    subscription: isPremium ? "premium" : "free",
+  };
+}
 
 /**
  * GET /api/services?search=&category=&location=&sort=price-asc
@@ -63,27 +118,31 @@ router.get(
       filter.location = contains(location);
     }
 
-    let sortOption = { createdAt: -1, _id: -1 };
-    if (sort === "price-asc") sortOption = { price: 1 };
-    if (sort === "price-desc") sortOption = { price: -1 };
+    let sortOption = { _premiumRank: -1, createdAt: -1, _id: -1 };
+    if (sort === "price-asc") sortOption = { _premiumRank: -1, price: 1, createdAt: -1 };
+    if (sort === "price-desc") sortOption = { _premiumRank: -1, price: -1, createdAt: -1 };
 
     const pipeline = [
       { $match: filter },
-      { $sort: sortOption },
       { $lookup: VENDOR_LOOKUP },
       { $unwind: { path: "$vendorId", preserveNullAndEmptyArrays: true } },
+      { $addFields: { _premiumRank: PREMIUM_RANK } },
+      { $sort: sortOption },
     ];
 
     const services = await servicesCollection.aggregate(pipeline).toArray();
 
     res.json({
-      services: services.map((service) => ({
-        ...service,
-        _id: service._id.toString(),
-        vendorId: service.vendorId
-          ? { ...service.vendorId, _id: service.vendorId._id.toString() }
-          : null,
-      })),
+      services: services.map((service) => {
+        const { _premiumRank, ...publicService } = service;
+        return {
+          ...publicService,
+          _id: service._id.toString(),
+          vendorId: service.vendorId
+            ? { ...toPublicVendor(service.vendorId), _id: service.vendorId._id.toString() }
+            : null,
+        };
+      }),
     });
   }),
 );
@@ -97,22 +156,26 @@ router.get(
   asyncHandler(async (req, res) => {
     const pipeline = [
       { $match: PUBLIC_FILTER },
-      { $sort: { createdAt: -1, _id: -1 } },
-      { $limit: 6 },
       { $lookup: VENDOR_LOOKUP },
       { $unwind: { path: "$vendorId", preserveNullAndEmptyArrays: true } },
+      { $addFields: { _premiumRank: PREMIUM_RANK } },
+      { $sort: { _premiumRank: -1, createdAt: -1, _id: -1 } },
+      { $limit: 6 },
     ];
 
     const services = await servicesCollection.aggregate(pipeline).toArray();
 
     res.json({
-      services: services.map((service) => ({
-        ...service,
-        _id: service._id.toString(),
-        vendorId: service.vendorId
-          ? { ...service.vendorId, _id: service.vendorId._id.toString() }
-          : null,
-      })),
+      services: services.map((service) => {
+        const { _premiumRank, ...publicService } = service;
+        return {
+          ...publicService,
+          _id: service._id.toString(),
+          vendorId: service.vendorId
+            ? { ...toPublicVendor(service.vendorId), _id: service.vendorId._id.toString() }
+            : null,
+        };
+      }),
     });
   }),
 );
@@ -137,9 +200,9 @@ router.get(
         .collection("user")
         .findOne(
           { _id: service.vendorId },
-          { projection: { name: 1, image: 1, businessName: 1 } },
+          { projection: { name: 1, image: 1, businessName: 1, subscription: 1, subscriptionPlan: 1, subscriptionExpiresAt: 1 } },
         );
-      if (found) vendor = { ...found, _id: found._id.toString() };
+    if (found) vendor = { ...toPublicVendor(found), _id: found._id.toString() };
     }
 
     res.json({

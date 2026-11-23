@@ -35,6 +35,9 @@ router.post(
     }
 
     const image = readString(req.body, "image", { maxLength: 8_000_000 });
+    if (!/^data:image\/(?:png|jpeg|webp);base64,/i.test(image)) {
+      throw new ApiError(400, "Upload a JPG, PNG or WebP image file.");
+    }
     const base64 = toBase64(image);
 
     const form = new FormData();
