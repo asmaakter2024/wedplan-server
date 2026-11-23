@@ -67,8 +67,8 @@ router.post(
       ],
       // The vendor's id travels with the session — verified by the webhook
       metadata: { vendorId: req.userId, plan: "premium" },
-      success_url: `${CLIENT_URL}/dashboard/subscription?result=success`,
-      cancel_url: `${CLIENT_URL}/dashboard/subscription?result=cancelled`,
+      success_url: `${CLIENT_URL}/dashboard/subscription/success`,
+      cancel_url: `${CLIENT_URL}/dashboard/subscription/cancel`,
     });
 
     await transactionsCollection.insertOne({
